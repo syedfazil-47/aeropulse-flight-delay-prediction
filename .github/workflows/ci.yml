@@ -11,5 +11,5 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - run: python -m pytest -q
+      - run: run: python -m pytest tests/ -q
       - run: python -m ml.train
