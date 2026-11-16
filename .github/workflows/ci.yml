@@ -12,5 +12,6 @@ jobs:
           python-version: '3.11'
       - run: pip install -r requirements.txt
       - run: python -c "from integrations.aviation import airlabs_flight, opensky_near_airport, opensky_access_token, flight_matches_route; from integrations.weather import fetch_hourly_forecast, weather_at_hour; print('All dashboard integration imports OK')"
+      - run: python -m compileall -q app integrations tests
       - run: python -m pytest tests/ -q
       - run: python -m ml.train
