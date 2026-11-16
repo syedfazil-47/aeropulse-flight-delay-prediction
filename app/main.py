@@ -11,7 +11,7 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from ml.features import AIRPORTS, AIRLINES, FEATURES, build_features
-from integrations.aviation import airlabs_flight, opensky_near_airport, flight_matches_route
+from integrations.aviation import airlabs_flight, opensky_near_airport, opensky_access_token, flight_matches_route
 from integrations.weather import fetch_hourly_forecast, weather_at_hour
 
 st.set_page_config(page_title='AeroPulse | Flight Intelligence', page_icon='✈️', layout='wide')
@@ -55,21 +55,28 @@ with st.form('flight_search'):
 def cached_airlabs(flight_number, api_key):
     return airlabs_flight(flight_number, api_key=api_key)
 
+@st.cache_data(ttl=1500, show_spinner=False)
+def cached_opensky_token(client_id, client_secret):
+    return opensky_access_token(client_id, client_secret)
+
 @st.cache_data(ttl=300, show_spinner=False)
-def cached_opensky(airport):
+def cached_opensky(airport, token=None):
     latitude, longitude, _ = AIRPORTS[airport]
-    return opensky_near_airport(latitude, longitude)
+    return opensky_near_airport(latitude, longitude, token=token)
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def cached_weather(airport, travel_date):
     latitude, longitude, _ = AIRPORTS[airport]
     return fetch_hourly_forecast(latitude, longitude, travel_date)
 
-def airlabs_key():
+def secret_or_env(key):
     try:
-        return st.secrets.get("AIRLABS_API_KEY") or os.getenv("AIRLABS_API_KEY")
+        return st.secrets.get(key) or os.getenv(key)
     except Exception:
-        return os.getenv("AIRLABS_API_KEY")
+        return os.getenv(key)
+
+def airlabs_key():
+    return secret_or_env("AIRLABS_API_KEY")
 
 if submitted:
     try:
@@ -104,15 +111,41 @@ if submitted:
             else:
                 st.info(f"AirLabs: {flight_data['message']}. This does not imply cancellation.")
 
-            oc1, oc2 = st.columns(2)
-            for column, airport, label in ((oc1, origin, 'Departure'), (oc2, destination, 'Arrival')):
-                with column:
-                    nearby = cached_opensky(airport)
-                    if nearby['status'] == 'ok':
-                        st.metric(f'OpenSky near {airport}', len(nearby['aircraft']))
-                        st.caption('Nearby tracked aircraft right now; not a match to the entered flight.')
-                    else:
-                        st.info(f'OpenSky {label.lower()} area currently unavailable.')
+            client_id = secret_or_env("OPENSKY_CLIENT_ID")
+            client_secret = secret_or_env("OPENSKY_CLIENT_SECRET")
+            token = None
+            token_issue = None
+            if client_id and client_secret:
+                auth = cached_opensky_token(client_id, client_secret)
+                if auth["status"] == "ok":
+                    token = auth["token"]
+                    st.caption("OpenSky: authenticated API connection configured.")
+                else:
+                    token_issue = auth["message"]
+            elif client_id or client_secret:
+                token_issue = "OpenSky credentials are incomplete."
+            else:
+                st.caption("OpenSky: using limited anonymous API access.")
+
+            if token_issue:
+                st.warning(f"OpenSky authentication: {token_issue}")
+            else:
+                oc1, oc2 = st.columns(2)
+                for column, airport, label in ((oc1, origin, 'Departure'), (oc2, destination, 'Arrival')):
+                    with column:
+                        nearby = cached_opensky(airport, token)
+                        if nearby["status"] == "ok":
+                            st.metric(f"OpenSky near {airport}", len(nearby["aircraft"]))
+                            if not nearby["aircraft"]:
+                                st.caption("No tracked aircraft reported for this area at the moment.")
+                            else:
+                                st.caption("Nearby aircraft right now; not a verified match to the selected flight.")
+                        elif nearby["status"] == "rate_limited":
+                            st.warning(f"OpenSky {label.lower()} area: rate limit reached. Try again after the provider's reset.")
+                        elif nearby["status"] in ("auth_error", "forbidden"):
+                            st.warning(f"OpenSky {label.lower()} area: {nearby['message']}.")
+                        else:
+                            st.info(f"OpenSky {label.lower()} area: {nearby['message']}.")
 
             st.subheader('Airport weather · Open-Meteo')
             st.caption('Forecast at the entered departure time, shown for both airports. Not used by the synthetic ML models.')

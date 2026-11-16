@@ -1,5 +1,5 @@
 """Mocked API tests; no live external request or account required."""
-from integrations.aviation import airlabs_flight, opensky_near_airport, flight_matches_route
+from integrations.aviation import airlabs_flight, opensky_near_airport, opensky_access_token, flight_matches_route
 
 class Response:
     def __init__(self, payload): self.payload=payload
@@ -36,3 +36,39 @@ def test_opensky_nearby_not_schedule():
 
 def test_opensky_empty():
     assert opensky_near_airport(17,78,session=Session({"time":1,"states":None}))["aircraft"]==[]
+
+class HttpResponse:
+    def __init__(self, status_code, payload=None):
+        self.status_code=status_code
+        self.payload=payload or {}
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import requests
+            raise requests.HTTPError(str(self.status_code))
+    def json(self): return self.payload
+
+class HttpSession:
+    def __init__(self, response): self.response=response
+    def get(self, *args, **kwargs): return self.response
+    def post(self, *args, **kwargs): return self.response
+
+def test_opensky_rate_limit_message():
+    result=opensky_near_airport(17.24,78.43,session=HttpSession(HttpResponse(429)))
+    assert result["status"]=="rate_limited"
+
+def test_opensky_auth_denied():
+    result=opensky_near_airport(17.24,78.43,token="expired",session=HttpSession(HttpResponse(401)))
+    assert result["status"]=="auth_error"
+
+def test_opensky_oauth_token_issued():
+    result=opensky_access_token("client","secret",session=HttpSession(HttpResponse(200,{"access_token":"sample-token"})))
+    assert result["status"]=="ok"
+    assert result["token"]=="sample-token"
+
+def test_opensky_oauth_bad_credentials():
+    result=opensky_access_token("bad","bad",session=HttpSession(HttpResponse(401)))
+    assert result["status"]=="auth_error"
+
+def test_opensky_forbidden():
+    result=opensky_near_airport(17.24,78.43,session=HttpSession(HttpResponse(403)))
+    assert result["status"]=="forbidden"
