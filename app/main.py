@@ -1,212 +1,290 @@
-"""AeroPulse: India domestic flight-delay demo dashboard."""
+"""AeroPulse — bright, flight-first aviation intelligence dashboard."""
 from datetime import date, datetime, time, timedelta
+from html import escape
 from pathlib import Path
 import importlib.util
 import os
 import sys
+
 import joblib
 import pandas as pd
+import plotly.graph_objects as go
 import requests
 import streamlit as st
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from ml.features import AIRPORTS, AIRLINES, FEATURES, build_features
-# Load our own adapter files by absolute location, avoiding any third-party
-# 'integrations' namespace package or cached module shadowing on Streamlit.
-def _load_adapter(module_name, filename):
+
+def load_local(name, filename):
     path = ROOT / "integrations" / filename
-    spec = importlib.util.spec_from_file_location(module_name, path)
+    spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"Cannot locate AeroPulse adapter: {filename}")
+        raise RuntimeError("AeroPulse integration file is unavailable")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
-_aviation = _load_adapter("aeropulse_aviation_adapter", "aviation.py")
-_weather = _load_adapter("aeropulse_weather_adapter", "weather.py")
-airlabs_flight = _aviation.airlabs_flight
-opensky_near_airport = _aviation.opensky_near_airport
-opensky_access_token = _aviation.opensky_access_token
-adsb_lol_near_airport = _aviation.adsb_lol_near_airport
-flight_matches_route = _aviation.flight_matches_route
-fetch_hourly_forecast = _weather.fetch_hourly_forecast
-weather_at_hour = _weather.weather_at_hour
+aviation = load_local("aeropulse_aviation", "aviation.py")
+weather = load_local("aeropulse_weather", "weather.py")
+flightlib = load_local("aeropulse_flight_profile", "flight_profile.py")
 
-st.set_page_config(page_title='AeroPulse | Flight Intelligence', page_icon='✈️', layout='wide')
-st.markdown('''<style>
-.stApp {background:linear-gradient(145deg,#070f23 0%,#0c1832 55%,#091226 100%);color:#edf6ff}
-[data-testid="stHeader"]{background:transparent}
-h1,h2,h3{color:#f0f8ff!important}
-[data-testid="stMetric"]{background:#142540;border:1px solid #284b6d;border-radius:14px;padding:18px}
-[data-testid="stMetricValue"]{color:#4ee4f5}
-.stButton>button[kind="primary"]{background:#00b6d7;color:#061322;border:0;font-weight:800}
-.ap-kicker{color:#5ce4f4;font-size:13px;letter-spacing:3px;font-weight:700}
-.ap-title{font-size:clamp(36px,5vw,64px);font-weight:850;line-height:1.06;margin:8px 0;color:#f3fbff}
-.ap-sub{color:#a8bdd3;font-size:17px;max-width:760px}
-.ap-panel{background:#13233e;border:1px solid #2a496b;border-radius:16px;padding:20px;margin:10px 0}
-.ap-warn{color:#ffc875}
-</style>''', unsafe_allow_html=True)
+st.set_page_config(
+    page_title="AeroPulse | Flight Intelligence",
+    page_icon="✈️",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+st.markdown("""
+<style>
+:root {--ink:#102d4d;--sky:#087bc4;--teal:#06a8bd;--muted:#58738c;--line:#dce8f2}
+.stApp {background:linear-gradient(180deg,#eef8ff 0%,#fff 290px,#f7fbff 100%);color:#102d4d}
+[data-testid="stHeader"] {background:transparent}
+.block-container {max-width:1320px;padding-top:1.9rem;padding-bottom:3rem}
+h1,h2,h3 {color:#123556!important;letter-spacing:-.025em}
+p,li {color:#344c62}
+[data-testid="stWidgetLabel"] p {color:#163953!important;font-weight:650!important}
+[data-testid="stForm"] {background:#fff!important;border:1px solid #d9e8f4!important;
+border-radius:22px!important;padding:22px!important;box-shadow:0 14px 42px rgba(21,80,125,.07)}
+[data-testid="stMetric"] {background:#fff!important;border:1px solid #e0edf6;
+border-radius:16px;padding:15px}
+[data-testid="stMetricLabel"] p {color:#657d91!important;font-weight:600!important}
+[data-testid="stMetricValue"] {color:#0f588c!important}
+[data-testid="stFormSubmitButton"] button {background:linear-gradient(100deg,#0679ca,#02b1c1)!important;
+color:#fff!important;font-weight:800!important;border:0!important;border-radius:12px!important;
+min-height:49px;box-shadow:0 8px 22px rgba(0,122,197,.19)}
+[data-testid="stFormSubmitButton"] button:hover {filter:brightness(.96)}
+[data-testid="stSelectbox"]>div,[data-testid="stTextInput"]>div {border-radius:10px}
+.ap-top {display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:28px}
+.ap-logo {display:flex;align-items:center;gap:10px;color:#103c65;font-size:25px;font-weight:850;letter-spacing:-.04em}
+.ap-mark {background:linear-gradient(125deg,#0578c7,#16c4ce);color:white;border-radius:14px;
+width:42px;height:42px;display:flex;align-items:center;justify-content:center}
+.ap-topright {font-size:12px;font-weight:750;color:#147aa4;letter-spacing:1.5px}
+.ap-hero {background:linear-gradient(115deg,#076fb0,#0aa7c1);border-radius:26px;
+padding:38px 42px;margin:0 0 25px;color:#fff;box-shadow:0 18px 42px rgba(8,103,167,.19);position:relative;overflow:hidden}
+.ap-hero:after {content:'✈';position:absolute;font-size:190px;right:25px;top:-55px;
+color:rgba(255,255,255,.11);transform:rotate(-14deg)}
+.ap-kicker {font-size:12px;font-weight:800;letter-spacing:2.4px;color:#c3f5ff}
+.ap-hero h1 {font-size:clamp(29px,4.1vw,51px)!important;line-height:1.12;
+margin:12px 0!important;color:white!important;max-width:760px}
+.ap-hero p {color:#e1f8ff;font-size:16px;max-width:670px;margin:0}
+.ap-section {margin:30px 0 12px;font-size:20px;font-weight:800;color:#163c61}
+.ap-panel {background:white;border:1px solid #dceaf3;border-radius:20px;padding:22px 25px;
+box-shadow:0 8px 32px rgba(16,70,107,.045);margin-bottom:16px}
+.ap-overline {font-size:11px;font-weight:850;color:#5482a4;letter-spacing:1.5px;text-transform:uppercase}
+.ap-flightline {font-size:21px;font-weight:850;color:#153d5f;margin-top:7px}
+.ap-route {display:flex;align-items:center;justify-content:space-between;gap:12px;margin:19px 0;flex-wrap:wrap}
+.ap-airport {font-size:clamp(28px,5vw,49px);font-weight:850;color:#073a65;letter-spacing:-2px}
+.ap-city {color:#536e84;font-weight:600;font-size:13px}
+.ap-dashes {flex:1;min-width:70px;text-align:center;color:#079fc2;font-size:22px;
+border-bottom:2px dashed #abdae8;padding-bottom:10px}
+.ap-pill {display:inline-block;background:#e7f7fb;color:#06748d;font-size:11px;
+font-weight:800;padding:5px 10px;border-radius:100px;margin:5px 5px 0 0}
+.ap-pill-muted {background:#edf2f6;color:#657d90}
+.ap-notice {font-size:12px;color:#59778f;line-height:1.5}
+.ap-grid {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:16px}
+.ap-kpi {background:#f4faff;border:1px solid #e0eef8;border-radius:13px;padding:14px}
+.ap-kpi strong {font-size:14px;display:block;color:#133f60;margin-top:5px;overflow-wrap:anywhere}
+.ap-kpi small {color:#62819c;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.6px}
+.ap-footer {color:#6a859a;font-size:11px;margin-top:25px}
+@media(max-width:700px) {
+.block-container {padding-left:1rem;padding-right:1rem;padding-top:1.15rem}
+.ap-hero {padding:25px 21px;border-radius:20px}
+.ap-hero:after {font-size:110px;top:0;right:-5px}
+.ap-panel {padding:18px 16px}
+.ap-grid {grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+</style>
+""", unsafe_allow_html=True)
 
-st.markdown('<div class="ap-kicker">AEROPULSE / AVIATION INTELLIGENCE</div>', unsafe_allow_html=True)
-st.markdown('<div class="ap-title">Predict the journey.<br>Prepare for the unexpected.</div>', unsafe_allow_html=True)
-st.markdown('<p class="ap-sub">A midnight-inspired AI flight intelligence dashboard for Indian domestic routes.</p>', unsafe_allow_html=True)
-st.warning('DEMO MODE — delay scores are synthetic and NOT real-world forecasts. AirLabs and Open-Meteo provide live observations where available; nearby aircraft are sourced from adsb.lol, with optional OpenSky diagnostics. They do not inform the demo ML scores. Do not use for travel decisions.')
+st.markdown("""
+<div class="ap-top">
+  <div class="ap-logo"><span class="ap-mark">✈</span>AeroPulse</div>
+  <div class="ap-topright">INDIA · FLIGHT INTELLIGENCE</div>
+</div>
+<div class="ap-hero">
+  <div class="ap-kicker">FLIGHT INTELLIGENCE, REIMAGINED</div>
+  <h1>Know your flight.<br>Travel with clarity.</h1>
+  <p>Explore Indian airline flights, verified information where available,
+  airport weather and experimental delay-risk insights.</p>
+</div>
+""", unsafe_allow_html=True)
 
-left, mid, right = st.columns(3)
-left.metric('Coverage', '8 airports', 'Demo routes')
-mid.metric('Airlines', '4', 'Demo selection')
-right.metric('Prediction horizon', '1–7 days', 'User-entered schedule')
-
-st.subheader('Flight intelligence search')
-with st.form('flight_search'):
-    a, b, c = st.columns(3)
-    flight = a.text_input('Flight number', '6E203', help='Examples: 6E203, AI501, QP1102, IX123')
-    origin = b.selectbox('Departure airport', list(AIRPORTS), index=2, format_func=lambda k: f'{k} · {AIRPORTS[k][2]}')
-    destination = c.selectbox('Arrival airport', list(AIRPORTS), index=0, format_func=lambda k: f'{k} · {AIRPORTS[k][2]}')
-    d, t = st.columns(2)
-    travel_date = d.date_input('Travel date', value=date.today() + timedelta(days=1), min_value=date.today(), max_value=date.today() + timedelta(days=7))
-    travel_time = t.time_input('Scheduled departure (local airport time)', value=time(18, 30))
-    test_opensky = st.checkbox(
-        'Advanced: test OpenSky directly (may be blocked on this hosting service)',
-        value=False,
-        help='Optional diagnostic only. Normal flight analysis uses adsb.lol for nearby-aircraft observations.'
-    )
-    submitted = st.form_submit_button('Analyze flight', type='primary', use_container_width=True)
-
-
-@st.cache_data(ttl=600, show_spinner=False)
-def cached_airlabs(flight_number, api_key):
-    return airlabs_flight(flight_number, api_key=api_key)
-
-@st.cache_data(ttl=1500, show_spinner=False)
-def cached_opensky_token(client_id, client_secret):
-    result = opensky_access_token(client_id, client_secret)
-    if result["status"] != "ok":
-        # Streamlit does not cache exceptions. This avoids caching temporary
-        # authentication failures for 25 minutes, as the earlier version did.
-        raise RuntimeError(result["message"])
-    return result
-
-@st.cache_data(ttl=300, show_spinner=False)
-def cached_opensky(airport, token=None):
-    latitude, longitude, _ = AIRPORTS[airport]
-    return opensky_near_airport(latitude, longitude, token=token)
-
-@st.cache_data(ttl=300, show_spinner=False)
-def cached_community_aircraft(airport):
-    latitude, longitude, _ = AIRPORTS[airport]
-    return adsb_lol_near_airport(latitude, longitude)
-
-@st.cache_data(ttl=1800, show_spinner=False)
-def cached_weather(airport, travel_date):
-    latitude, longitude, _ = AIRPORTS[airport]
-    return fetch_hourly_forecast(latitude, longitude, travel_date)
-
-def secret_or_env(key):
+def secret(key):
     try:
         return st.secrets.get(key) or os.getenv(key)
     except Exception:
         return os.getenv(key)
 
-def airlabs_key():
-    return secret_or_env("AIRLABS_API_KEY")
+@st.cache_data(ttl=600, show_spinner=False)
+def live_flight_lookup(number, _key):
+    return aviation.airlabs_flight(number, api_key=_key)
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def airport_weather(code, selected_date):
+    lat,lon,_=AIRPORTS[code]
+    return weather.fetch_hourly_forecast(lat,lon,selected_date)
+
+@st.cache_data(ttl=300, show_spinner=False)
+def aircraft_count(code):
+    lat,lon,_=AIRPORTS[code]
+    return aviation.adsb_lol_near_airport(lat,lon)
+
+@st.cache_resource(show_spinner=False)
+def models():
+    paths=[ROOT/"ml"/f"{name}_demo.joblib" for name in ("departure","arrival")]
+    if not all(path.exists() for path in paths):
+        from ml.train import train_demo
+        train_demo()
+    return [joblib.load(path) for path in paths]
+
+def donut(score, heading, accent):
+    score=max(0,min(1,score))
+    fig=go.Figure(go.Pie(
+        labels=["Delay 15+ min","On time / under 15 min"],
+        values=[round(score*100,1),round((1-score)*100,1)],
+        hole=.77, sort=False, direction="clockwise",
+        marker=dict(colors=[accent,"#e7f0f7"],line=dict(color="#fff",width=2)),
+        textinfo="none", hovertemplate="%{label}: %{value:.0f}%<extra></extra>",
+        showlegend=False,
+    ))
+    fig.add_annotation(text=f"<b>{score:.0%}</b><br><span style='font-size:12px;color:#6b8297'>risk</span>",
+                       x=.5,y=.5,showarrow=False,font=dict(size=30,color="#113f62"))
+    fig.update_layout(height=235,margin=dict(l=0,r=0,t=7,b=0),paper_bgcolor="rgba(0,0,0,0)",
+                      font=dict(family="Arial"),showlegend=False)
+    st.plotly_chart(fig,use_container_width=True,config={"displayModeBar":False})
+    st.markdown(f"<div style='text-align:center;font-weight:800;color:#164362'>{escape(heading)}</div>"
+                f"<div style='text-align:center;font-size:12px;color:#6b8297'>"
+                f"Illustrative on-time share: {(1-score):.0%}</div>",unsafe_allow_html=True)
+
+st.markdown('<div class="ap-section">Find your flight</div>',unsafe_allow_html=True)
+with st.form("lookup"):
+    a,b,c=st.columns([1.2,1,1])
+    flight=a.text_input("Flight number",value="",placeholder="e.g. 6E 203",
+                        help="Supported prototype airlines: IndiGo, Air India, Akasa, Air India Express")
+    flight_date=b.date_input("Travel date",value=date.today(),
+                             min_value=date.today(),max_value=date.today()+timedelta(days=7))
+    dep_time=c.time_input("Departure time (IST, if known)",time(18,30))
+    x,y=st.columns(2)
+    choices=list(AIRPORTS)
+    origin=x.selectbox("Departure airport (manual fallback)",choices,
+                       index=choices.index("HYD"),format_func=lambda k:f"{k} · {AIRPORTS[k][2]}")
+    dest=y.selectbox("Arrival airport (manual fallback)",choices,
+                     index=choices.index("DEL"),format_func=lambda k:f"{k} · {AIRPORTS[k][2]}")
+    submitted=st.form_submit_button("Explore flight intelligence  ✈",type="primary",use_container_width=True)
 
 if submitted:
+    normalized=flightlib.normalize_flight(flight)
     try:
-        features = build_features(flight, origin, destination, datetime.combine(travel_date, travel_time))
-        paths = [ROOT / 'ml' / f'{name}_demo.joblib' for name in ('departure', 'arrival')]
-        if not all(p.exists() for p in paths):
-            from ml.train import train_demo
-            with st.spinner('Preparing demonstration models for first use...'):
-                train_demo()
-        if all(p.exists() for p in paths):
-            scores = [float(joblib.load(path).predict_proba(pd.DataFrame([features])[FEATURES])[0, 1]) for path in paths]
-            st.subheader('Prediction results · Synthetic demo')
-            x, y = st.columns(2)
-            for container, title, score in zip((x, y), ('Departure delay risk', 'Arrival delay risk'), scores):
-                with container:
-                    st.metric(title, f'{score:.0%}')
-                    st.progress(score)
-                    st.caption('Illustrative model score only; not a calibrated real-world probability.')
-
-            st.subheader('Aviation data · Live source checks')
-            st.caption('Data feeds are separate from synthetic predictions. Current flight status does not establish a verified future flight schedule.')
-            flight_data = cached_airlabs(flight, airlabs_key())
-            if flight_data['status'] == 'not_configured':
-                st.info('AirLabs not connected: add AIRLABS_API_KEY to Streamlit Secrets.')
-            elif flight_data['status'] == 'ok':
-                matching = flight_matches_route(flight_data['flights'], origin, destination)
-                st.success(f"AirLabs: {len(flight_data['flights'])} current record(s) found; {len(matching)} match this route.")
-                if matching:
-                    st.dataframe(pd.DataFrame(matching), use_container_width=True, hide_index=True)
-                else:
-                    st.info('No current AirLabs record confirms your selected route.')
-            else:
-                st.info(f"AirLabs: {flight_data['message']}. This does not imply cancellation.")
-
-            st.subheader('Nearby aircraft · Community tracking')
-            st.caption('Live aircraft observations powered by adsb.lol (ODbL 1.0). These are not verified flight schedules or delay predictions.')
-            area1, area2 = st.columns(2)
-            for column, airport in ((area1, origin), (area2, destination)):
+        if not normalized:
+            raise ValueError("Enter your airline flight number first.")
+        if origin==dest:
+            raise ValueError("Select different departure and arrival airports.")
+        carrier=flightlib.known_carrier(normalized,AIRLINES)
+        with st.spinner("Checking flight details and available information..."):
+            result=live_flight_lookup(normalized,secret("AIRLABS_API_KEY"))
+        verified=flightlib.choose_flight(result.get("flights",[]),normalized,flight_date)
+        flight_origin=verified["dep_iata"] if verified else origin
+        flight_dest=verified["arr_iata"] if verified else dest
+        origin_known=flight_origin in AIRPORTS
+        dest_known=flight_dest in AIRPORTS
+        city_origin=AIRPORTS[flight_origin][2] if origin_known else "Airport not in directory"
+        city_dest=AIRPORTS[flight_dest][2] if dest_known else "Airport not in directory"
+        source_msg="Verified matching record · AirLabs" if verified else "User-selected route · Not flight-verified"
+        badge_class="" if verified else " ap-pill-muted"
+        live_state=verified.get("status") if verified else None
+        st.markdown('<div class="ap-section">Your flight overview</div>',unsafe_allow_html=True)
+        st.markdown(
+            '<div class="ap-panel"><div class="ap-overline">FLIGHT PROFILE · '+escape(flight_date.strftime("%A, %d %B %Y"))+'</div>'
+            '<div class="ap-flightline">'+escape(carrier)+' · '+escape(normalized)+'</div>'
+            '<span class="ap-pill'+badge_class+'">'+escape(source_msg)+'</span>'
+            '<div class="ap-route"><div><div class="ap-airport">'+escape(flight_origin)+'</div>'
+            '<div class="ap-city">'+escape(city_origin)+'</div></div>'
+            '<div class="ap-dashes">✈</div>'
+            '<div style="text-align:right"><div class="ap-airport">'+escape(flight_dest)+'</div>'
+            '<div class="ap-city">'+escape(city_dest)+'</div></div></div>'
+            '<div class="ap-grid">'
+            '<div class="ap-kpi"><small>Flight</small><strong>'+escape(normalized)+'</strong></div>'
+            '<div class="ap-kpi"><small>Airline</small><strong>'+escape(carrier)+'</strong></div>'
+            '<div class="ap-kpi"><small>Departure</small><strong>'+escape(flightlib.show_time(verified.get("dep_time")) if verified else dep_time.strftime("%H:%M")+' · entered')+'</strong></div>'
+            '<div class="ap-kpi"><small>Arrival</small><strong>'+escape(flightlib.show_time(verified.get("arr_time")) if verified else "Not verified")+'</strong></div>'
+            '</div></div>',unsafe_allow_html=True)
+        if verified:
+            if live_state:
+                st.caption("AirLabs status: "+str(live_state)+". Provider-reported status, not a guarantee.")
+            if verified.get("dep_actual") or verified.get("arr_actual"):
+                st.caption("Reported actual departure: "+flightlib.show_time(verified.get("dep_actual"))
+                           +" · Actual arrival: "+flightlib.show_time(verified.get("arr_actual")))
+            if (origin,dest)!=(flight_origin,flight_dest):
+                st.info("Provider-reported route differs from your manual selections. Flight profile uses the provider record.")
+        else:
+            st.caption("No date-matched, route-confirmed airline record was returned by AirLabs. "
+                       "The route and departure time above are your selections, not a verified schedule. "
+                       "This does not mean the flight is cancelled.")
+            if result.get("status") not in ("ok","not_found"):
+                st.caption("AirLabs lookup: "+result.get("message","No provider data available"))
+        st.markdown('<div class="ap-section">Delay risk outlook</div>',unsafe_allow_html=True)
+        if origin_known and dest_known and carrier!="Carrier not confirmed":
+            try:
+                model_input=build_features(normalized,flight_origin,flight_dest,
+                                          datetime.combine(flight_date,dep_time))
+                frame=pd.DataFrame([model_input])[FEATURES]
+                with st.spinner("Computing experimental model estimates..."):
+                    scores=[float(model.predict_proba(frame)[0,1]) for model in models()]
+                st.caption("Experimental model · example-trained · not a validated real-flight forecast")
+                p1,p2=st.columns(2)
+                with p1:
+                    donut(scores[0],"Departure delay","#0b9cd5")
+                with p2:
+                    donut(scores[1],"Arrival delay","#f39a50")
+                st.caption("A delay means 15 minutes or more after schedule. Estimates above come from simulated training examples; "
+                           "they are not probabilities calibrated to actual Indian flight operations.")
+            except (ValueError,OSError,KeyError) as exc:
+                st.info("Experimental risk estimates unavailable for this selection.")
+        else:
+            st.info("No experimental risk score for this route. Flight information can still be explored.")
+        st.markdown('<div class="ap-section">Airport conditions</div>',unsafe_allow_html=True)
+        wc1,wc2=st.columns(2)
+        for column,airport,city in ((wc1,flight_origin,city_origin),(wc2,flight_dest,city_dest)):
+            with column:
+                st.markdown(f"**{escape(city)} · {escape(airport)}**")
+                if airport not in AIRPORTS:
+                    st.caption("Weather data unavailable for this airport.")
+                    continue
+                try:
+                    current=weather.weather_at_hour(airport_weather(airport,flight_date),
+                                                     datetime.combine(flight_date,dep_time))
+                    temp=current.get("Temperature (°C)")
+                    rain=current.get("Rain chance (%)")
+                    wind=current.get("Wind (km/h)")
+                    st.metric("Temperature",f"{temp}°C" if temp is not None else "—")
+                    st.caption(f"Rain chance: {rain if rain is not None else '—'}% · Wind: {wind if wind is not None else '—'} km/h")
+                except (requests.RequestException,ValueError,KeyError,IndexError):
+                    st.caption("Forecast unavailable for the selected hour.")
+        st.caption("Weather refers to the selected departure hour at each airport, not the actual arrival hour.")
+        with st.expander("Nearby aircraft activity · optional"):
+            st.caption("Community ADS-B observations near each airport (adsb.lol, ODbL 1.0). "
+                       "Nearby planes are not necessarily the searched flight.")
+            n1,n2=st.columns(2)
+            for column,airport in ((n1,flight_origin),(n2,flight_dest)):
                 with column:
-                    observation = cached_community_aircraft(airport)
-                    if observation["status"] == "ok":
-                        st.metric(f"Aircraft near {airport}", len(observation["aircraft"]))
-                        st.caption("Source: adsb.lol · 80 km radius · 5-minute cache")
-                        if not observation["aircraft"]:
-                            st.caption("No recently positioned aircraft reported.")
+                    if airport not in AIRPORTS:
+                        continue
+                    info=aircraft_count(airport)
+                    if info["status"]=="ok":
+                        st.metric(f"Near {airport}",len(info["aircraft"]))
                     else:
-                        st.caption(f"Aircraft tracking near {airport} unavailable ({observation['status']}); other data remains available.")
-
-            if test_opensky:
-                st.subheader("OpenSky · Optional diagnostic")
-                st.caption("OpenSky may block or time out from cloud-hosting networks. Checking it is optional and not required for live aircraft counts.")
-                client_id = secret_or_env("OPENSKY_CLIENT_ID")
-                client_secret = secret_or_env("OPENSKY_CLIENT_SECRET")
-                token = None
-                token_issue = None
-                if client_id and client_secret:
-                    try:
-                        auth = cached_opensky_token(client_id, client_secret)
-                        token = auth["token"]
-                        st.caption("OpenSky authentication successful.")
-                    except RuntimeError as exc:
-                        token_issue = str(exc)
-                elif client_id or client_secret:
-                    token_issue = "OpenSky credentials are incomplete."
-                else:
-                    st.caption("OpenSky: limited anonymous access.")
-
-                if token_issue:
-                    st.info(f"OpenSky unavailable: {token_issue}. Community aircraft tracking remains independent.")
-                else:
-                    for airport in (origin, destination):
-                        observation = cached_opensky(airport, token)
-                        if observation["status"] == "ok":
-                            st.caption(f"OpenSky {airport}: {len(observation['aircraft'])} nearby aircraft.")
-                        else:
-                            st.caption(f"OpenSky {airport}: {observation.get('message', 'Unavailable')}.")
-            st.subheader('Airport weather · Open-Meteo')
-            st.caption('Forecast at the entered departure time, shown for both airports. Not used by the synthetic ML models.')
-            wc1, wc2 = st.columns(2)
-            for column, airport in ((wc1, origin), (wc2, destination)):
-                with column:
-                    st.markdown(f'**{airport} weather**')
-                    try:
-                        hourly = cached_weather(airport, travel_date)
-                        conditions = weather_at_hour(hourly, datetime.combine(travel_date, travel_time))
-                        for label, value in conditions.items():
-                            st.write(f"{label}: {value if value is not None else 'Unavailable'}")
-                    except (requests.RequestException, ValueError, KeyError, IndexError):
-                        st.info('Weather forecast unavailable for this airport and time.')
-
-            st.markdown(f'<div class="ap-panel"><b>{flight.upper()}</b> · {origin} → {destination}<br><span class="ap-warn">Delay means 15+ minutes after the scheduled time. No actual flight schedule was checked.</span></div>', unsafe_allow_html=True)
+                        st.caption(f"{airport}: tracking unavailable ({info['status']})")
+        with st.expander("How AeroPulse sources and evaluates data"):
+            st.write("AirLabs provides current flight observations when covered by the API plan. "
+                     "Flights are only labeled date-verified when their flight number, date, "
+                     "and both airport codes match. Open-Meteo provides weather forecasts. "
+                     "Community ADS-B data describes nearby aircraft only.")
+            st.write("The delay classifier is a portfolio demonstration trained with generated examples. "
+                     "Real prediction accuracy cannot be claimed until sufficient legally usable "
+                     "historical Indian airline records are collected and evaluated chronologically.")
     except ValueError as exc:
         st.error(str(exc))
 
-with st.expander('About data quality and model readiness'):
-    st.write('The included models learn from generated demonstration rows. For real predictions we need legally usable historical flight records, schedule snapshots, a time-based evaluation split, and measured calibration. AirLabs live flight observations, adsb.lol nearby aircraft (optional OpenSky diagnostics), and Open-Meteo weather are separate and do not train or inform the demo model.')
-    st.write('The flight number is validated for airline prefixes. AirLabs may provide live records when available, but this app does not validate a future timetable.')
-
-st.caption('AeroPulse · Portfolio prototype · Built with Streamlit and scikit-learn')
+st.markdown('<div class="ap-footer">AeroPulse · Indian aviation intelligence prototype · Flight information depends on provider coverage. '
+            'Always confirm schedules with the airline.</div>',unsafe_allow_html=True)
