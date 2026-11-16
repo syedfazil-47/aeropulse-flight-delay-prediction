@@ -33,3 +33,15 @@ streamlit run app/main.py
 - The selected arrival airport's weather is shown at the entered departure time (not a calculated arrival time).
 - Live external requests have not been verified against a real AirLabs account in CI; unit tests use mocked responses.
 - To train real delay models, collect legally usable historical records with scheduled and actual times, perform time-separated validation and calibration, and document measured quality.
+
+## OpenSky connectivity troubleshooting (November 2026)
+OpenSky anonymous state-vector access can be rate-limited by the server's public IP. AeroPulse now shows distinct messages for HTTP 401 (authentication), 403 (access denied), 429 (quota), timeouts and empty areas.
+
+To use authenticated access, create an **OpenSky API Client** on your OpenSky account page (not a normal website password). Add the following keys to **Streamlit App settings → Secrets**:
+```toml
+OPENSKY_CLIENT_ID = "your-opensky-client-id"
+OPENSKY_CLIENT_SECRET = "your-opensky-client-secret"
+```
+The dashboard automatically requests an OAuth2 access token, caches it for 25 minutes, and uses it for up to 5-minute-cached nearby aircraft lookups. **Never commit these credentials to GitHub.** OpenSky can still reject requests or report zero nearby aircraft. These data cannot verify airline schedules or flight delays.
+
+Official API docs: https://openskynetwork.github.io/opensky-api/rest.html
