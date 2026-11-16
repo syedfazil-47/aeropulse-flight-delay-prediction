@@ -117,6 +117,61 @@ def opensky_near_airport(latitude, longitude, radius_deg=0.35, token=None, sessi
         return {"status": "unavailable", "message": "OpenSky connection or response error", "aircraft": []}
 
 
+
+ADSB_LOL_API = "https://api.adsb.lol/v2/lat/{lat}/lon/{lon}/dist/{km}"
+
+def adsb_lol_near_airport(latitude, longitude, radius_km=80, session=None):
+    """Independent community aircraft feed, explicitly sourced from adsb.lol.
+
+    Returns nearby aircraft observations, NOT schedule status or delay labels.
+    Public API licensed under ODbL 1.0; show attribution in the UI.
+    """
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        raise ValueError("Invalid coordinates")
+    radius_km = max(10, min(int(radius_km), 100))
+    url = ADSB_LOL_API.format(
+        lat=f"{latitude:.4f}", lon=f"{longitude:.4f}", km=radius_km
+    )
+    http = session or requests
+    try:
+        response = http.get(
+            url,
+            headers={"User-Agent": "AeroPulse-FlightIntelligence/1.0 (+https://github.com/syedfazil-47/aeropulse-flight-delay-prediction)",
+                     "Accept": "application/json"},
+            timeout=(3, 6),
+        )
+        code = getattr(response, "status_code", 200)
+        if code == 429:
+            return {"status": "rate_limited", "aircraft": [], "source": "adsb.lol"}
+        if code in (401, 403):
+            return {"status": "access_denied", "aircraft": [], "source": "adsb.lol"}
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or not isinstance(payload.get("ac"), list):
+            return {"status": "invalid_response", "aircraft": [], "source": "adsb.lol"}
+        aircraft = []
+        for record in payload["ac"][:250]:
+            if not isinstance(record, dict):
+                continue
+            lat, lon = record.get("lat"), record.get("lon")
+            if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+                continue
+            age = record.get("seen_pos")
+            if isinstance(age, (int, float)) and age > 90:
+                continue
+            aircraft.append({
+                "callsign": str(record.get("flight") or "").strip(),
+                "icao24": record.get("hex"), "latitude": lat, "longitude": lon,
+                "on_ground": record.get("alt_baro") == "ground",
+                "velocity_kts": record.get("gs"), "heading": record.get("track"),
+            })
+        return {"status": "ok", "aircraft": aircraft, "source": "adsb.lol",
+                "timestamp": payload.get("now")}
+    except requests.Timeout:
+        return {"status": "timeout", "aircraft": [], "source": "adsb.lol"}
+    except (requests.RequestException, ValueError):
+        return {"status": "unavailable", "aircraft": [], "source": "adsb.lol"}
+
 def flight_matches_route(records, origin, destination):
     """Require explicit matching departure and arrival codes."""
     return [r for r in records if r.get("dep_iata") == origin and r.get("arr_iata") == destination]
