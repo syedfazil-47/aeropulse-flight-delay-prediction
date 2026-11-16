@@ -72,3 +72,29 @@ def test_opensky_oauth_bad_credentials():
 def test_opensky_forbidden():
     result=opensky_near_airport(17.24,78.43,session=HttpSession(HttpResponse(403)))
     assert result["status"]=="forbidden"
+
+def test_opensky_token_timeout_is_distinguished():
+    import requests
+    class TimeoutSession:
+        def post(self, *args, **kwargs):
+            raise requests.Timeout("sensitive internal endpoint details")
+    result = opensky_access_token("id", "secret", session=TimeoutSession())
+    assert result["status"] == "timeout"
+    assert "sensitive" not in result["message"]
+
+def test_opensky_token_connection_failure():
+    import requests
+    class ConnectionSession:
+        def post(self, *args, **kwargs):
+            raise requests.ConnectionError("private network error")
+    result = opensky_access_token("id", "secret", session=ConnectionSession())
+    assert result["status"] == "connection_error"
+    assert "private" not in result["message"]
+
+def test_opensky_token_server_error():
+    result = opensky_access_token("id", "secret", session=HttpSession(HttpResponse(503)))
+    assert result["status"] == "server_error"
+
+def test_opensky_token_rate_limited():
+    result = opensky_access_token("id", "secret", session=HttpSession(HttpResponse(429)))
+    assert result["status"] == "rate_limited"
