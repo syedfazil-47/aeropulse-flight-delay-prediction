@@ -45,3 +45,10 @@ OPENSKY_CLIENT_SECRET = "your-opensky-client-secret"
 The dashboard automatically requests an OAuth2 access token, caches it for 25 minutes, and uses it for up to 5-minute-cached nearby aircraft lookups. **Never commit these credentials to GitHub.** OpenSky can still reject requests or report zero nearby aircraft. These data cannot verify airline schedules or flight delays.
 
 Official API docs: https://openskynetwork.github.io/opensky-api/rest.html
+
+## November 2026: Resilient aircraft tracking
+OpenSky's OAuth token server times out from the current Streamlit hosting environment. OpenSky's maintainers explicitly warn that they may block some cloud and hyperscaler IP ranges. **No programmatic change can guarantee OpenSky will respond from that host**. AeroPulse therefore does not contact OpenSky during a normal flight analysis; this eliminates the recurring 15-second authentication timeout as a dependency.
+
+Nearby-aircraft information now comes from **adsb.lol**, an independent community ADS-B feed (https://www.adsb.lol/docs/open-data/api). Its public API is licensed under **Open Database License 1.0 (ODbL)**. The app attributes the source and restricts usage to a 5-minute local cache, 80 km search radius, and 6-second response timeout. Position availability and uptime depend on provider coverage and access policies, so even this feed cannot guarantee observations.
+
+For diagnostic purposes, advanced users may opt into **"test OpenSky directly"** during a flight search; OpenSky's existing OAuth credentials remain private in Streamlit Secrets and are never sent to the fallback provider. If OpenSky access becomes possible from another hosting IP, it can be re-enabled as a primary source after verification. Neither provider verifies a specific flight's planned route or delay.

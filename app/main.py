@@ -28,6 +28,7 @@ _weather = _load_adapter("aeropulse_weather_adapter", "weather.py")
 airlabs_flight = _aviation.airlabs_flight
 opensky_near_airport = _aviation.opensky_near_airport
 opensky_access_token = _aviation.opensky_access_token
+adsb_lol_near_airport = _aviation.adsb_lol_near_airport
 flight_matches_route = _aviation.flight_matches_route
 fetch_hourly_forecast = _weather.fetch_hourly_forecast
 weather_at_hour = _weather.weather_at_hour
@@ -50,7 +51,7 @@ h1,h2,h3{color:#f0f8ff!important}
 st.markdown('<div class="ap-kicker">AEROPULSE / AVIATION INTELLIGENCE</div>', unsafe_allow_html=True)
 st.markdown('<div class="ap-title">Predict the journey.<br>Prepare for the unexpected.</div>', unsafe_allow_html=True)
 st.markdown('<p class="ap-sub">A midnight-inspired AI flight intelligence dashboard for Indian domestic routes.</p>', unsafe_allow_html=True)
-st.warning('DEMO MODE — delay scores are synthetic and NOT real-world forecasts. AirLabs, OpenSky, and Open-Meteo provide separate live observations where available. They do not inform the demo ML scores. Do not use for travel decisions.')
+st.warning('DEMO MODE — delay scores are synthetic and NOT real-world forecasts. AirLabs and Open-Meteo provide live observations where available; nearby aircraft are sourced from adsb.lol, with optional OpenSky diagnostics. They do not inform the demo ML scores. Do not use for travel decisions.')
 
 left, mid, right = st.columns(3)
 left.metric('Coverage', '8 airports', 'Demo routes')
@@ -66,6 +67,11 @@ with st.form('flight_search'):
     d, t = st.columns(2)
     travel_date = d.date_input('Travel date', value=date.today() + timedelta(days=1), min_value=date.today(), max_value=date.today() + timedelta(days=7))
     travel_time = t.time_input('Scheduled departure (local airport time)', value=time(18, 30))
+    test_opensky = st.checkbox(
+        'Advanced: test OpenSky directly (may be blocked on this hosting service)',
+        value=False,
+        help='Optional diagnostic only. Normal flight analysis uses adsb.lol for nearby-aircraft observations.'
+    )
     submitted = st.form_submit_button('Analyze flight', type='primary', use_container_width=True)
 
 
@@ -86,6 +92,11 @@ def cached_opensky_token(client_id, client_secret):
 def cached_opensky(airport, token=None):
     latitude, longitude, _ = AIRPORTS[airport]
     return opensky_near_airport(latitude, longitude, token=token)
+
+@st.cache_data(ttl=300, show_spinner=False)
+def cached_community_aircraft(airport):
+    latitude, longitude, _ = AIRPORTS[airport]
+    return adsb_lol_near_airport(latitude, longitude)
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def cached_weather(airport, travel_date):
@@ -134,42 +145,48 @@ if submitted:
             else:
                 st.info(f"AirLabs: {flight_data['message']}. This does not imply cancellation.")
 
-            client_id = secret_or_env("OPENSKY_CLIENT_ID")
-            client_secret = secret_or_env("OPENSKY_CLIENT_SECRET")
-            token = None
-            token_issue = None
-            if client_id and client_secret:
-                try:
-                    auth = cached_opensky_token(client_id, client_secret)
-                    token = auth["token"]
-                    st.caption("OpenSky: authentication successful; access token received.")
-                except RuntimeError as exc:
-                    token_issue = str(exc)
-            elif client_id or client_secret:
-                token_issue = "OpenSky credentials are incomplete."
-            else:
-                st.caption("OpenSky: using limited anonymous API access.")
+            st.subheader('Nearby aircraft · Community tracking')
+            st.caption('Live aircraft observations powered by adsb.lol (ODbL 1.0). These are not verified flight schedules or delay predictions.')
+            area1, area2 = st.columns(2)
+            for column, airport in ((area1, origin), (area2, destination)):
+                with column:
+                    observation = cached_community_aircraft(airport)
+                    if observation["status"] == "ok":
+                        st.metric(f"Aircraft near {airport}", len(observation["aircraft"]))
+                        st.caption("Source: adsb.lol · 80 km radius · 5-minute cache")
+                        if not observation["aircraft"]:
+                            st.caption("No recently positioned aircraft reported.")
+                    else:
+                        st.caption(f"Aircraft tracking near {airport} unavailable ({observation['status']}); other data remains available.")
 
-            if token_issue:
-                st.warning(f"OpenSky authentication: {token_issue}")
-            else:
-                oc1, oc2 = st.columns(2)
-                for column, airport, label in ((oc1, origin, 'Departure'), (oc2, destination, 'Arrival')):
-                    with column:
-                        nearby = cached_opensky(airport, token)
-                        if nearby["status"] == "ok":
-                            st.metric(f"OpenSky near {airport}", len(nearby["aircraft"]))
-                            if not nearby["aircraft"]:
-                                st.caption("No tracked aircraft reported for this area at the moment.")
-                            else:
-                                st.caption("Nearby aircraft right now; not a verified match to the selected flight.")
-                        elif nearby["status"] == "rate_limited":
-                            st.warning(f"OpenSky {label.lower()} area: rate limit reached. Try again after the provider's reset.")
-                        elif nearby["status"] in ("auth_error", "forbidden"):
-                            st.warning(f"OpenSky {label.lower()} area: {nearby['message']}.")
+            if test_opensky:
+                st.subheader("OpenSky · Optional diagnostic")
+                st.caption("OpenSky may block or time out from cloud-hosting networks. Checking it is optional and not required for live aircraft counts.")
+                client_id = secret_or_env("OPENSKY_CLIENT_ID")
+                client_secret = secret_or_env("OPENSKY_CLIENT_SECRET")
+                token = None
+                token_issue = None
+                if client_id and client_secret:
+                    try:
+                        auth = cached_opensky_token(client_id, client_secret)
+                        token = auth["token"]
+                        st.caption("OpenSky authentication successful.")
+                    except RuntimeError as exc:
+                        token_issue = str(exc)
+                elif client_id or client_secret:
+                    token_issue = "OpenSky credentials are incomplete."
+                else:
+                    st.caption("OpenSky: limited anonymous access.")
+
+                if token_issue:
+                    st.info(f"OpenSky unavailable: {token_issue}. Community aircraft tracking remains independent.")
+                else:
+                    for airport in (origin, destination):
+                        observation = cached_opensky(airport, token)
+                        if observation["status"] == "ok":
+                            st.caption(f"OpenSky {airport}: {len(observation['aircraft'])} nearby aircraft.")
                         else:
-                            st.info(f"OpenSky {label.lower()} area: {nearby['message']}.")
-
+                            st.caption(f"OpenSky {airport}: {observation.get('message', 'Unavailable')}.")
             st.subheader('Airport weather · Open-Meteo')
             st.caption('Forecast at the entered departure time, shown for both airports. Not used by the synthetic ML models.')
             wc1, wc2 = st.columns(2)
@@ -189,7 +206,7 @@ if submitted:
         st.error(str(exc))
 
 with st.expander('About data quality and model readiness'):
-    st.write('The included models learn from generated demonstration rows. For real predictions we need legally usable historical flight records, schedule snapshots, a time-based evaluation split, and measured calibration. AirLabs live flight observations, OpenSky nearby aircraft, and Open-Meteo weather integrations are included but do not train or inform the demo model.')
+    st.write('The included models learn from generated demonstration rows. For real predictions we need legally usable historical flight records, schedule snapshots, a time-based evaluation split, and measured calibration. AirLabs live flight observations, adsb.lol nearby aircraft (optional OpenSky diagnostics), and Open-Meteo weather are separate and do not train or inform the demo model.')
     st.write('The flight number is validated for airline prefixes. AirLabs may provide live records when available, but this app does not validate a future timetable.')
 
 st.caption('AeroPulse · Portfolio prototype · Built with Streamlit and scikit-learn')
