@@ -75,7 +75,12 @@ def cached_airlabs(flight_number, api_key):
 
 @st.cache_data(ttl=1500, show_spinner=False)
 def cached_opensky_token(client_id, client_secret):
-    return opensky_access_token(client_id, client_secret)
+    result = opensky_access_token(client_id, client_secret)
+    if result["status"] != "ok":
+        # Streamlit does not cache exceptions. This avoids caching temporary
+        # authentication failures for 25 minutes, as the earlier version did.
+        raise RuntimeError(result["message"])
+    return result
 
 @st.cache_data(ttl=300, show_spinner=False)
 def cached_opensky(airport, token=None):
@@ -134,12 +139,12 @@ if submitted:
             token = None
             token_issue = None
             if client_id and client_secret:
-                auth = cached_opensky_token(client_id, client_secret)
-                if auth["status"] == "ok":
+                try:
+                    auth = cached_opensky_token(client_id, client_secret)
                     token = auth["token"]
-                    st.caption("OpenSky: authenticated API connection configured.")
-                else:
-                    token_issue = auth["message"]
+                    st.caption("OpenSky: authentication successful; access token received.")
+                except RuntimeError as exc:
+                    token_issue = str(exc)
             elif client_id or client_secret:
                 token_issue = "OpenSky credentials are incomplete."
             else:
