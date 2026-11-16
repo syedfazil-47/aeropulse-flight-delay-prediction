@@ -1,6 +1,7 @@
 """AeroPulse: India domestic flight-delay demo dashboard."""
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
+import importlib.util
 import os
 import sys
 import joblib
@@ -11,8 +12,25 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from ml.features import AIRPORTS, AIRLINES, FEATURES, build_features
-from integrations.aviation import airlabs_flight, opensky_near_airport, opensky_access_token, flight_matches_route
-from integrations.weather import fetch_hourly_forecast, weather_at_hour
+# Load our own adapter files by absolute location, avoiding any third-party
+# 'integrations' namespace package or cached module shadowing on Streamlit.
+def _load_adapter(module_name, filename):
+    path = ROOT / "integrations" / filename
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot locate AeroPulse adapter: {filename}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+_aviation = _load_adapter("aeropulse_aviation_adapter", "aviation.py")
+_weather = _load_adapter("aeropulse_weather_adapter", "weather.py")
+airlabs_flight = _aviation.airlabs_flight
+opensky_near_airport = _aviation.opensky_near_airport
+opensky_access_token = _aviation.opensky_access_token
+flight_matches_route = _aviation.flight_matches_route
+fetch_hourly_forecast = _weather.fetch_hourly_forecast
+weather_at_hour = _weather.weather_at_hour
 
 st.set_page_config(page_title='AeroPulse | Flight Intelligence', page_icon='✈️', layout='wide')
 st.markdown('''<style>
