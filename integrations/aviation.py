@@ -40,25 +40,41 @@ def airlabs_flight(flight_number, api_key=None, session=None):
         return {"status": "unavailable", "message": "AirLabs unavailable or response invalid", "flights": []}
 
 def opensky_access_token(client_id, client_secret, session=None):
-    """Get short-lived OAuth2 token; caller should cache it for about 25 minutes."""
+    """Exchange OpenSky OAuth2 client credentials for a short-lived access token.
+
+    Report safe, actionable error categories without leaking credentials,
+    request bodies, or potentially sensitive server responses.
+    """
     if not client_id or not client_secret:
-        return {"status": "not_configured", "message": "OpenSky credentials are incomplete"}
+        return {"status": "not_configured", "message": "OpenSky client credentials are incomplete"}
     http = session or requests
     try:
         response = http.post(OPENSKY_TOKEN_URL, data={
             "grant_type": "client_credentials",
-            "client_id": client_id, "client_secret": client_secret,
-        }, timeout=12)
-        if response.status_code in (400, 401, 403):
-            return {"status": "auth_error", "message": "OpenSky credentials rejected"}
+            "client_id": client_id.strip(), "client_secret": client_secret.strip(),
+        }, headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=(5, 15))
+        code = getattr(response, "status_code", 200)
+        if code in (400, 401, 403):
+            return {"status": "auth_error", "message": f"OpenSky authentication rejected (HTTP {code}); check the API client ID and secret"}
+        if code == 429:
+            return {"status": "rate_limited", "message": "OpenSky token endpoint is rate limiting requests (HTTP 429)"}
+        if code >= 500:
+            return {"status": "server_error", "message": f"OpenSky authentication server returned HTTP {code}"}
         response.raise_for_status()
         payload = response.json()
         token = payload.get("access_token") if isinstance(payload, dict) else None
-        if not token:
-            return {"status": "auth_error", "message": "OpenSky token not issued"}
+        if not isinstance(token, str) or not token:
+            return {"status": "invalid_response", "message": "OpenSky token response did not contain an access token"}
         return {"status": "ok", "token": token}
+    except requests.Timeout:
+        return {"status": "timeout", "message": "OpenSky authentication server timed out from Streamlit hosting"}
+    except requests.ConnectionError:
+        return {"status": "connection_error", "message": "Streamlit hosting could not connect to OpenSky authentication server (network, DNS, or IP restriction)"}
+    except requests.HTTPError:
+        return {"status": "http_error", "message": "OpenSky token endpoint returned an unexpected HTTP error"}
     except (requests.RequestException, ValueError):
-        return {"status": "unavailable", "message": "OpenSky token service unavailable"}
+        return {"status": "invalid_response", "message": "OpenSky authentication response could not be processed"}
 
 
 def opensky_near_airport(latitude, longitude, radius_deg=0.35, token=None, session=None):
