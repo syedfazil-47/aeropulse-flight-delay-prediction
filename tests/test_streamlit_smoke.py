@@ -8,4 +8,4 @@ def test_dashboard_initial_screen_renders():
     assert not app.exception, [str(item.message) for item in app.exception]
     assert len(app.text_input)>=1
     assert len(app.selectbox)==2
-    assert "AeroPulse" in str(app)
+    assert any("AeroPulse" in str(item.value) for item in app.markdown)
