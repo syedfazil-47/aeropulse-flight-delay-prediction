@@ -5,6 +5,7 @@ import requests
 
 AIRLABS_URL = "https://airlabs.co/api/v9/flights"
 OPENSKY_URL = "https://opensky-network.org/api/states/all"
+OPENSKY_TOKEN_URL = "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token"
 
 def airlabs_flight(flight_number, api_key=None, session=None):
     """Query live flight records, matching flight numbers exactly."""
@@ -38,8 +39,30 @@ def airlabs_flight(flight_number, api_key=None, session=None):
     except (requests.RequestException, ValueError):
         return {"status": "unavailable", "message": "AirLabs unavailable or response invalid", "flights": []}
 
+def opensky_access_token(client_id, client_secret, session=None):
+    """Get short-lived OAuth2 token; caller should cache it for about 25 minutes."""
+    if not client_id or not client_secret:
+        return {"status": "not_configured", "message": "OpenSky credentials are incomplete"}
+    http = session or requests
+    try:
+        response = http.post(OPENSKY_TOKEN_URL, data={
+            "grant_type": "client_credentials",
+            "client_id": client_id, "client_secret": client_secret,
+        }, timeout=12)
+        if response.status_code in (400, 401, 403):
+            return {"status": "auth_error", "message": "OpenSky credentials rejected"}
+        response.raise_for_status()
+        payload = response.json()
+        token = payload.get("access_token") if isinstance(payload, dict) else None
+        if not token:
+            return {"status": "auth_error", "message": "OpenSky token not issued"}
+        return {"status": "ok", "token": token}
+    except (requests.RequestException, ValueError):
+        return {"status": "unavailable", "message": "OpenSky token service unavailable"}
+
+
 def opensky_near_airport(latitude, longitude, radius_deg=0.35, token=None, session=None):
-    """Nearby aircraft states, not a flight schedule or reliable specific-flight match."""
+    """Nearby aircraft states, NOT a flight schedule or a flight-delay observation."""
     if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
         raise ValueError("Invalid coordinates")
     radius_deg = max(0.05, min(float(radius_deg), 0.8))
@@ -50,6 +73,15 @@ def opensky_near_airport(latitude, longitude, radius_deg=0.35, token=None, sessi
             "lamin": max(-90, latitude-radius_deg), "lamax": min(90, latitude+radius_deg),
             "lomin": max(-180, longitude-radius_deg), "lomax": min(180, longitude+radius_deg),
         }, headers=headers, timeout=12)
+        code = getattr(response, "status_code", 200)
+        if code == 429:
+            return {"status": "rate_limited", "message": "OpenSky request limit reached", "aircraft": []}
+        if code == 401:
+            return {"status": "auth_error", "message": "OpenSky rejected authentication", "aircraft": []}
+        if code == 403:
+            return {"status": "forbidden", "message": "OpenSky access denied for this connection", "aircraft": []}
+        if code >= 500:
+            return {"status": "unavailable", "message": "OpenSky server temporarily unavailable", "aircraft": []}
         response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, dict) or not isinstance(payload.get("states"), (list, type(None))):
@@ -63,8 +95,11 @@ def opensky_near_airport(latitude, longitude, radius_deg=0.35, token=None, sessi
                              "on_ground": state[8], "velocity_mps": state[9],
                              "heading": state[10]})
         return {"status": "ok", "timestamp": payload.get("time"), "aircraft": aircraft}
+    except requests.Timeout:
+        return {"status": "unavailable", "message": "OpenSky request timed out", "aircraft": []}
     except (requests.RequestException, ValueError):
-        return {"status": "unavailable", "message": "OpenSky unavailable", "aircraft": []}
+        return {"status": "unavailable", "message": "OpenSky connection or response error", "aircraft": []}
+
 
 def flight_matches_route(records, origin, destination):
     """Require explicit matching departure and arrival codes."""
